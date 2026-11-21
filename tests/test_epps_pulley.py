@@ -704,3 +704,34 @@ class TestEppsPulleyComparison:
         # Both should detect non-normality
         assert (result_narrow > 0.01).all()
         assert (result_wide > 0.01).all()
+
+
+class TestEppsPulleyIntegration:
+    """Tests for the ``integration`` argument."""
+
+    def test_invalid_integration_raises(self):
+        with pytest.raises(ValueError, match="integration"):
+            EppsPulley(integration="gauss-hermite")
+
+    def test_trapezoid_is_default(self):
+        default, explicit = EppsPulley(), EppsPulley(integration="trapezoid")
+        torch.testing.assert_close(default.weights, explicit.weights)
+
+    def test_simpson_weights_match_scipy(self):
+        from scipy.integrate import simpson
+
+        t_max, n_points = 3.0, 17
+        ep = EppsPulley(t_max=t_max, n_points=n_points, integration="simpson")
+        t = np.linspace(0, t_max, n_points)
+        f = np.cos(1.7 * t) ** 2  # arbitrary smooth even integrand
+        expected = 2 * simpson(f * np.exp(-(t**2) / 2), x=t)
+        actual = (ep.weights.double().numpy() * f).sum()
+        assert actual == pytest.approx(expected, rel=1e-6)
+
+    def test_simpson_differs_from_trapezoid(self):
+        torch.manual_seed(0)
+        x = torch.rand(256, 3)
+        trap = EppsPulley(integration="trapezoid")(x)
+        simp = EppsPulley(integration="simpson")(x)
+        assert not torch.allclose(trap, simp)
+
