@@ -28,14 +28,14 @@ class EppsPulley(UnivariateTest):
     standard normal characteristic function, and w(t) is an integration weight.
 
     Args:
-        t_max (float, optional): Maximum integration point for linear spacing methods.
-            Only used for 'trapezoid' and 'simpson' integration. Default: 3.
-        n_points (int, optional): Number of integration points. Must be odd for
-            'simpson' integration. For 'gauss-hermite', this determines the number
-            of positive nodes. Default: 17.
+        t_max (float, optional): Maximum integration point. The grid is linearly
+            spaced over [0, t_max]. Default: 3.
+        n_points (int, optional): Number of integration points, including 0.
+            Must be odd. Default: 17.
         integration (str, optional): Integration method to use. One of:
-            - 'trapezoid': Trapezoidal rule with linear spacing over [0, t_max]
-            Default: 'trapezoid'.
+            - 'trapezoid': Trapezoidal rule over [0, t_max]
+            - 'simpson': Composite Simpson's 1/3 rule over [0, t_max]
+            Default: 'trapezoid'. Any other value raises ``ValueError``.
 
     Attributes:
         t (torch.Tensor): Integration points (positive half, including 0).
@@ -48,8 +48,6 @@ class EppsPulley(UnivariateTest):
     Notes:
         - The implementation exploits symmetry: only t ≥ 0 are computed, and
           contributions from -t are implicitly added via doubled weights.
-        - For 'gauss-hermite', nodes and weights are adapted from the standard
-          Gauss-Hermite quadrature to integrate against exp(-t²).
         - Supports distributed training via all_reduce operations.
 
     Example:
@@ -59,10 +57,17 @@ class EppsPulley(UnivariateTest):
         >>> print(f"Test statistic: {statistic.item():.4f}")
     """
 
+    INTEGRATION_METHODS = ("trapezoid", "simpson")
+
     def __init__(
         self, t_max: float = 3, n_points: int = 17, integration: str = "trapezoid"
     ):
         super().__init__()
+        if integration not in self.INTEGRATION_METHODS:
+            raise ValueError(
+                f"Unknown integration method {integration!r}; "
+                f"expected one of {self.INTEGRATION_METHODS}"
+            )
         assert n_points % 2 == 1
         self.integration = integration
         self.n_points = n_points
@@ -72,8 +77,15 @@ class EppsPulley(UnivariateTest):
         t = torch.linspace(0, t_max, n_points, dtype=torch.float32)
         self.register_buffer("t", t)
         dt = t_max / (n_points - 1)
-        weights = torch.full((n_points,), 2 * dt, dtype=torch.float32)
-        weights[[0, -1]] = dt  # Half-weight at t=0
+        # Quadrature weights over [0, t_max], doubled because the integrand is
+        # even in t, so the integral over [-t_max, t_max] is twice this one.
+        if integration == "trapezoid":
+            weights = torch.full((n_points,), 2 * dt, dtype=torch.float32)
+            weights[[0, -1]] = dt  # Half-weight at the endpoints
+        else:  # simpson
+            weights = torch.full((n_points,), 2 * dt / 3, dtype=torch.float32)
+            weights[1:-1:2] *= 4
+            weights[2:-1:2] *= 2
         self.register_buffer("phi", self.t.square().mul_(0.5).neg_().exp_())
         self.register_buffer("weights", weights * self.phi)
 
